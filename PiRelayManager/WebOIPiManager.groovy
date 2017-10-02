@@ -136,6 +136,7 @@ def installed() {
 def initialize() {
 
     subscribe(location, null, response, [filterEvents:false])    
+    updateGPIOState();
    
 	setupVirtualRelay(deviceName1, deviceType1, deviceConfig1);
     setupVirtualRelay(deviceName2, deviceType2, deviceConfig2);
