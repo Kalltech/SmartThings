@@ -43,6 +43,22 @@ preferences {
     input "theHub", "hub", title: "On which hub?", multiple: false, required: true
     input "piUser","text", "title": "User", multiple: false, required: false
     input "piPsswd","text", "title": "Password", multiple: false, required: false
+      input (
+          name: "configLoggingLevelIDE",
+          title: "IDE Live Logging Level:\nMessages with this level and higher will be logged to the IDE.",
+          type: "enum",
+          options: [
+              "0" : "None",
+              "1" : "Error",
+              "2" : "Warning",
+              "3" : "Info",
+              "4" : "Debug",
+              "5" : "Trace"
+          ],
+          defaultValue: "5",
+          displayDuringSetup: true,
+          required: false
+      )
   }
   
     section("Device 1") {    
@@ -128,15 +144,20 @@ preferences {
 }
 
 def installed() {
-  log.debug "Installed with settings: ${settings}"
+  logger("Installed with settings: ${settings}","debug")
 
   initialize()
 }
 
 def initialize() {
+    // Update internal state:
+    state.loggingLevelIDE = (settings.configLoggingLevelIDE) ? settings.configLoggingLevelIDE.toInteger() : 5
 
-    subscribe(location, null, response, [filterEvents:false])    
-    updateGPIOState();
+    subscribe(location, null, response, [filterEvents:false])
+    
+    unschedule()
+    runEvery1Minute(Schedule_updateGPIOState)
+    Schedule_updateGPIOState()
    
 	setupVirtualRelay(deviceName1, deviceType1, deviceConfig1);
     setupVirtualRelay(deviceName2, deviceType2, deviceConfig2);
@@ -151,9 +172,15 @@ def initialize() {
 }
 
 def updated() {
-	log.debug "Updated with settings: ${settings}"
+log.info "loggingLevelIDE:$state.loggingLevelIDE"
+    // Update internal state:
+    state.loggingLevelIDE = (settings.configLoggingLevelIDE) ? settings.configLoggingLevelIDE.toInteger() : 5
+log.info "loggingLevelIDE:$state.loggingLevelIDE"
     
-    updateGPIOState();
+	logger("Updated with settings: ${settings}","debug")
+    unschedule()
+    runEvery1Minute(Schedule_updateGPIOState)
+    Schedule_updateGPIOState()
     unsubscribe();
     
     updateVirtualRelay(deviceName1, deviceType1, deviceConfig1);
@@ -190,24 +217,24 @@ def updateVirtualRelay(deviceName, deviceType, deviceConfig) {
             break;
     }
     
-    log.trace "Searching for: $theDeviceNetworkId";
+    logger("Searching for: $theDeviceNetworkId","trace")
     
   	def theDevice = getChildDevices().find{ d -> d.deviceNetworkId.startsWith(theDeviceNetworkId) }  
     
     if(theDevice){ // The switch already exists
-    	log.debug "Found existing device which we will now update"   
+		logger("Found existing device which we will now update"   ,"debug")
         theDevice.deviceNetworkId = theDeviceNetworkId //+ "." + deviceConfig
         theDevice.label = deviceName
         theDevice.name = deviceName
         
         if(deviceType == "switch") { // Actions specific for the relay device type
             subscribe(theDevice, "switch", switchChange)
-            log.debug "Setting initial state of $deviceName to off"
+			logger("Setting initial state of $deviceName to off","debug")
             setSwitchState(deviceConfig, "off", true);
             theDevice.off();
         } else if(deviceType == "contact") { // Actions specific for the contact device type
             subscribe(theDevice, "contact", contactChange)
-            log.debug "Setting initial state of $deviceName to open"
+			logger("Setting initial state of $deviceName to open","debug")
             setContactState(deviceConfig, "open", true);
             theDevice.open();
         } else {
@@ -216,7 +243,7 @@ def updateVirtualRelay(deviceName, deviceType, deviceConfig) {
         
     } else { // The switch does not exist
     	if(deviceName){ // The user filled in data about this switch
-    		log.debug "This device does not exist, creating a new one now"
+			logger("This device does not exist, creating a new one now","debug")
         	/*setupVirtualRelay(deviceId, gpioName);*/
             setupVirtualRelay(deviceName, deviceType, deviceConfig);
        	}
@@ -226,33 +253,32 @@ def updateVirtualRelay(deviceName, deviceType, deviceConfig) {
 def setupVirtualRelay(deviceName, deviceType, deviceConfig) {
 
 	if(deviceName){
-        log.debug deviceName
-	    log.debug deviceType
-        log.debug deviceConfig
+		logger(deviceName,"debug")
+		logger(deviceType,"debug")
+		logger(deviceConfig,"debug")
         
         switch(deviceType) {
         	case "switch":
-            	log.trace "Found a relay switch called $deviceName on GPIO #$deviceConfig"
+				logger("Found a relay switch called $deviceName on GPIO #$deviceConfig","trace")
 				def d = addChildDevice("Kalltech", "Virtual Pi Relay", getRelayID(deviceConfig), theHub.id, [label:deviceName, name:deviceName])
 	    		subscribe(d, "switch", switchChange)
-                
-	    		log.debug "Setting initial state of $gpioName to off"
+                logger("Setting initial state of $gpioName to off","debug")
         		setSwitchState(deviceConfig, "off", true);
 	    		d.off();
             	break;
                     
         	case "contact":
-            	log.trace "Found a Contact contact called $deviceName on GPIO #$deviceConfig"
+                logger("Found a Contact contact called $deviceName on GPIO #$deviceConfig","trace")
 				def d = addChildDevice("Kalltech", "Virtual Pi Contact", getContactID(deviceConfig), theHub.id, [label:deviceName, name:deviceName])
 	    		subscribe(d, "contact", contactChange)
                 
-	    		log.debug "Setting initial state of $gpioName to open"
+                logger("Setting initial state of $gpioName to open","debug")
         		setContactState(deviceConfig, "open", true);
 	    		d.open();
             	break;
                     
             case "temperatureSensor":
-			  	log.trace "Found a temperature sensor called $deviceName on $deviceConfig"
+                logger("Found a temperature sensor called $deviceName on $deviceConfig","trace")
                 def d = addChildDevice("ibeech", "Virtual Pi Temperature", getTemperatureID(deviceConfig), theHub.id, [label:deviceName, name:deviceName])                 
                 state.temperatureZone = deviceConfig
                 updateTempratureSensor();
@@ -279,72 +305,80 @@ def uninstalled() {
   def delete = getChildDevices()
     delete.each {
     	unsubscribe(it)
-    	log.trace "about to delete device"
+		logger("about to delete device","trace")
         deleteChildDevice(it.deviceNetworkId)
     }   
 }
 
 def response(evt){
- def msg = parseLanMessage(evt.description);
+    logger("response","debug")
+    def msg = parseLanMessage(evt.description);
     if(msg && msg.body){
-    
-    	// This is the GPIO headder state message
+
+            // This is the GPIO headder state message
         def children = getChildDevices(false)
-    	if(msg.json) {
-           msg.json.GPIO.each { item ->
-                updateRelayDevice(item.key, item.value.value, children);
-            }
-            
-            log.trace "Finished Getting GPIO State"
+        if(msg.json) {
+                msg.json.GPIO.each { item ->
+                    updateRelayDevice(item.key, item.value.value, children);
+                }
+                logger("Finished Getting GPIO State","trace")
         }
-        
+
         def tempContent = msg.body.tokenize('.')
         if(tempContent.size() == 2 && tempContent[0].isNumber() && tempContent[1].isNumber() ) {
-            
-        	// Got temperature response            
+            // Got temperature response            
             def networkId = getTemperatureID(state.temperatureZone);
-            def theDevice = getChildDevices().find{ d -> d.deviceNetworkId.startsWith(networkId) }  
-            
+            def theDevice = getChildDevices().find{ d -> d.deviceNetworkId.startsWith(networkId) }              
             if(theDevice) {
                 theDevice.setTemperature(msg.body, state.temperatureZone);
-                log.trace "$theDevice set to $msg.body"
+                logger("$theDevice set to $msg.body","trace")
             }
-        }
-    }
+		}
+	}
 }
 
 def updateRelayDevice(GPIO, state, childDevices) {
 
 	def theDevice = childDevices.find{ d -> d.deviceNetworkId.endsWith(".$GPIO") }  
     if(theDevice) { 
-    	log.debug "Updating $theDevice for GPIO $GPIO with value $state" 
+		logger("Updating $theDevice for GPIO $GPIO with value $state","debug")
         theDevice.changeState(state)
     }
 }
 
 def updateTempratureSensor() {
 
-	log.trace "Updating temperature for $state.temperatureZone"
+	logger("Updating temperature for $state.temperatureZone","info")
 	
 	executeRequest("/devices/" + state.temperatureZone  + "/sensor/temperature/c", "GET", false, null, true);
     
-    runIn(60, updateTempratureSensor);
+    //runIn(60, updateTempratureSensor);
 }
 
+def Schedule_updateGPIOState() {
+	logger("Schedule_updateGPIOState","trace")
+    def nbPolling = Math.round(60/piPolling) -1
+    def Polling = piPolling
+	for (i in 1..nbPolling) {
+    	Polling = piPolling * i
+        runIn(Polling, updateGPIOState, [overwrite: false]);
+	}
+    updateTempratureSensor()
+}
 def updateGPIOState() { 
-
+	logger("updateGPIOState","info")
 	def stamp = new Date().format('yyyy-M-d hh:mm:ss',location.timeZone)
-	log.trace "Updating GPIO map at " + stamp
+	logger("Updating GPIO map at " + stamp,"trace")
 	
 	executeRequest("/*", "GET", false, null, true);
     
-    runIn(piPolling, updateGPIOState);
+    //runIn(piPolling, updateGPIOState);
 }
 
 def switchChange(evt){
 
-	log.debug "Switch event!";
-    log.debug evt.value;
+	logger("Switch event!","debug")
+	logger(evt.value,"debug")
     if(evt.value == "on" || evt.value == "off") return;    
 	
     
@@ -353,12 +387,12 @@ def switchChange(evt){
     def GPIO = parts[5];
     def state = parts[6];
     
-    log.debug state;
+	logger(state,"debug")
     
     switch(state){
     	case "refresh":
         // Refresh this switches button
-        log.debug "Refreshing the state of GPIO " + GPIO
+		logger("Refreshing the state of GPIO " + GPIO,"debug")
         executeRequest("/*", "GET", false, null, true)
         return;        
     }
@@ -369,8 +403,8 @@ def switchChange(evt){
 }
 def contactChange(evt){
 
-	log.debug "Contact event!";
-    log.debug evt.value;
+		logger("Contact event!","debug")
+		logger(evt.value,"debug")
     if(evt.value == "closed" || evt.value == "open") return;    
 	
     
@@ -379,12 +413,12 @@ def contactChange(evt){
     def GPIO = parts[5];
     def state = parts[6];
     
-    log.debug state;
+	logger(state,"debug")
     
     switch(state){
     	case "refresh":
         // Refresh this switches button
-        log.debug "Refreshing the state of GPIO " + GPIO
+		logger("Refreshing the state of GPIO " + GPIO,"debug")
         executeRequest("/*", "GET", false, null, true)
         return;        
     }
@@ -396,7 +430,7 @@ def contactChange(evt){
 
 
 def setSwitchState(gpio, state, PostactualAction) {
-	log.debug "Executing 'setSwitchState'"
+	logger("Executing 'setSwitchState'","debug")
      
     // Determine the path to post which will set the switch to the desired state
     def Path = "/GPIO/" + gpio + "/value/";
@@ -406,8 +440,8 @@ def setSwitchState(gpio, state, PostactualAction) {
 }
 
 def setContactState(gpio, state, PostactualAction) {
-	log.debug "Executing 'setContactState'"
-     
+	logger("Executing 'setContactState'","debug")
+
     // Determine the path to post which will set the switch to the desired state
     def Path = "/GPIO/" + gpio + "/value/";
 	Path += (state == "on") ? "1" : "0";
@@ -417,7 +451,7 @@ def setContactState(gpio, state, PostactualAction) {
 
 def executeRequest(Path, method, setGPIODirection, gpioPin, PostactualAction) {
 		   
-	log.debug "The " + method + " path is: " + Path;
+	logger("The " + method + " path is: " + Path,"debug")
 	    
     def headers = [:] 
     headers.put("HOST", "$settings.piIP:$settings.piPort")
@@ -431,14 +465,14 @@ def executeRequest(Path, method, setGPIODirection, gpioPin, PostactualAction) {
             	method: "POST",
             	path: "/GPIO/" + gpioPin  + "/function/OUT",
             	headers: headers)
-			log.trace "POSTing OUT"
+			logger("POSTing OUT","trace")
         	sendHubCommand(setDirection);
         } else if(setGPIODirection == "IN") {
         	def setDirection = new physicalgraph.device.HubAction(
             	method: "POST",
             	path: "/GPIO/" + gpioPin  + "/function/IN",
             	headers: headers)
-			log.trace "POSTing IN"
+				logger("POSTing IN","trace")
         	sendHubCommand(setDirection);
         }
         
@@ -450,7 +484,7 @@ def executeRequest(Path, method, setGPIODirection, gpioPin, PostactualAction) {
         sendHubCommand(actualAction)        
     }
     catch (Exception e) {
-        log.debug "Hit Exception $e on $hubAction"
+		logger("Hit Exception $e on $hubAction","warn")
     }
 }
 
@@ -463,14 +497,46 @@ private String NetworkDeviceId(){
 
 private String convertIPtoHex(ipAddress) { 
     String hex = ipAddress.tokenize( '.' ).collect {  String.format( '%02x', it.toInteger() ) }.join()
-    //log.debug "IP address entered is $ipAddress and the converted hex code is $hex"
+	logger("IP address entered is $ipAddress and the converted hex code is $hex","debug")
     return hex
 
 }
 
 private String convertPortToHex(port) {
     String hexport = port.toString().format( '%04x', port.toInteger() )
-    //log.debug hexport
+	logger("hexport:$hexport","debug")
     return hexport
 }
- 
+/**
+ *  logger()
+ *
+ *  Wrapper function for all logging.
+ **/
+private logger(msg, level = "debug") {
+
+    switch(level) {
+        case "error":
+            if (state.loggingLevelIDE >= 1) log.error msg
+            break
+
+        case "warn":
+            if (state.loggingLevelIDE >= 2) log.warn msg
+            break
+
+        case "info":
+            if (state.loggingLevelIDE >= 3) log.info msg
+            break
+
+        case "debug":
+            if (state.loggingLevelIDE >= 4) log.debug msg
+            break
+
+        case "trace":
+            if (state.loggingLevelIDE >= 5) log.trace msg
+            break
+
+        default:
+            log.debug msg
+            break
+    }
+}
